@@ -12,18 +12,23 @@ import {
 } from './engine/simulate'
 
 // 화면 입력 단위: 금액은 만원, 비율은 %
+interface PayoutForm {
+  startAge: number
+  payoutBasis: 'years' | 'endAge'
+  payoutYears: number
+  payoutEndAge: number
+  payoutReturn: number
+}
+
 interface Form {
   common: { birthYear: number; birthMonth: number; inflation: number; payoutMode: 'real' | 'level' }
-  personal: {
+  personal: PayoutForm & {
     enabled: boolean
     balance: number
     monthly: number
     growth: number
     endAge: number
     accumReturn: number
-    startAge: number
-    payoutYears: number
-    payoutReturn: number
     taxType: 'deductible' | 'exempt'
   }
   national: {
@@ -37,7 +42,7 @@ interface Form {
     futureValue: number
     endAge: number
   }
-  dc: {
+  dc: PayoutForm & {
     enabled: boolean
     balance: number
     annual: number
@@ -45,9 +50,6 @@ interface Form {
     joinYear: number
     retireAge: number
     accumReturn: number
-    startAge: number
-    payoutYears: number
-    payoutReturn: number
   }
 }
 
@@ -61,7 +63,9 @@ const DEFAULT_FORM: Form = {
     endAge: 60,
     accumReturn: 5,
     startAge: 60,
+    payoutBasis: 'years',
     payoutYears: 25,
+    payoutEndAge: 85,
     payoutReturn: 3,
     taxType: 'deductible',
   },
@@ -85,7 +89,9 @@ const DEFAULT_FORM: Form = {
     retireAge: 60,
     accumReturn: 4,
     startAge: 60,
+    payoutBasis: 'years',
     payoutYears: 25,
+    payoutEndAge: 85,
     payoutReturn: 3,
   },
 }
@@ -95,7 +101,7 @@ const SERIES: { key: SourceKey; label: string }[] = [
   { key: 'dc', label: '퇴직연금(DC)' },
   { key: 'personal', label: '개인연금' },
 ]
-const MAX_PAYOUT_YEARS = 40
+const MAX_END_AGE = 100
 const WON = 10_000
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
@@ -108,9 +114,16 @@ const premiumRate = (type: Form['national']['futureType']) =>
 const years1 = (months: number) => (months / 12).toLocaleString('ko-KR', { maximumFractionDigits: 1 })
 const pct = (v: number) => `${(v * 100).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}%`
 
-function toInputs(f: Form, nationalMonthly: number): Inputs {
+/** 실제 수령 개시 나이와 수령 기간. 기간을 직접 넣거나 소진 나이에서 거꾸로 구한다 */
+function payoutPlan(a: PayoutForm, contributionEndAge: number, currentAge: number) {
+  const start = Math.max(a.startAge, PARAMS.privatePensionMinAge, contributionEndAge, currentAge)
+  const requested = a.payoutBasis === 'years' ? a.payoutYears : a.payoutEndAge - start
+  const years = clamp(requested, PARAMS.minPayoutYears, MAX_END_AGE - start)
+  return { start, years, adjusted: years !== requested }
+}
+
+function toInputs(f: Form, nationalMonthly: number, currentAge: number): Inputs {
   const normalAge = nationalPensionNormalAge(f.common.birthYear)
-  const years = (v: number) => clamp(v, PARAMS.minPayoutYears, MAX_PAYOUT_YEARS)
   return {
     birthYear: f.common.birthYear,
     birthMonth: f.common.birthMonth,
@@ -124,7 +137,7 @@ function toInputs(f: Form, nationalMonthly: number): Inputs {
       contributionEndAge: f.personal.endAge,
       accumReturn: f.personal.accumReturn / 100,
       startAge: f.personal.startAge,
-      payoutYears: years(f.personal.payoutYears),
+      payoutYears: payoutPlan(f.personal, f.personal.endAge, currentAge).years,
       payoutReturn: f.personal.payoutReturn / 100,
       taxType: f.personal.taxType,
     },
@@ -141,7 +154,7 @@ function toInputs(f: Form, nationalMonthly: number): Inputs {
       contributionEndAge: f.dc.retireAge,
       accumReturn: f.dc.accumReturn / 100,
       startAge: f.dc.startAge,
-      payoutYears: years(f.dc.payoutYears),
+      payoutYears: payoutPlan(f.dc, f.dc.retireAge, currentAge).years,
       payoutReturn: f.dc.payoutReturn / 100,
       joinYear: f.dc.joinYear,
     },
@@ -244,12 +257,15 @@ export default function App() {
     [common.birthYear, common.birthMonth, national.pastYears, national.pastIncome, futureIncome, national.endAge, now],
   )
   const nationalMonthly = national.mode === 'simple' ? national.monthly * WON : estimate.monthly
-  const result = useMemo(() => calculate(toInputs(form, nationalMonthly), now), [form, nationalMonthly, now])
+  const currentAge = Math.floor(((now.year - common.birthYear) * 12 + now.month - common.birthMonth) / 12)
+  const result = useMemo(
+    () => calculate(toInputs(form, nationalMonthly, currentAge), now),
+    [form, nationalMonthly, currentAge, now],
+  )
 
   const update = <K extends keyof Form>(key: K, patch: Partial<Form[K]>) =>
     setForm((f) => ({ ...f, [key]: { ...f[key], ...patch } }))
 
-  const currentAge = Math.floor(((now.year - common.birthYear) * 12 + now.month - common.birthMonth) / 12)
   const normalAge = nationalPensionNormalAge(common.birthYear)
   const nationalStartAge = clamp(national.startAge, normalAge - 5, normalAge + 5)
   const gross = (a: Amounts) => (basis === 'real' ? a.grossReal : a.grossNominal)
@@ -265,10 +281,56 @@ export default function App() {
 
   const minAgeHint = (startAge: number) =>
     startAge < PARAMS.privatePensionMinAge ? '55세부터 받을 수 있어 55세로 계산합니다.' : undefined
-  const yearsHint = (years: number) =>
-    years < PARAMS.minPayoutYears || years > MAX_PAYOUT_YEARS
-      ? `${PARAMS.minPayoutYears}~${MAX_PAYOUT_YEARS}년 범위로 계산합니다.`
-      : undefined
+  const payoutFields = (key: 'dc' | 'personal', contributionEndAge: number) => {
+    const a = form[key]
+    const plan = payoutPlan(a, contributionEndAge, currentAge)
+    const endAge = plan.start + plan.years
+    const adjustedNote = plan.adjusted
+      ? ` 수령 기간은 ${PARAMS.minPayoutYears}년 이상, ${MAX_END_AGE}세 이하로 맞춰 계산합니다.`
+      : ''
+    return (
+      <>
+        <Field label="수령 개시 나이" hint={minAgeHint(a.startAge)}>
+          <NumInput value={a.startAge} onChange={(v) => update(key, { startAge: Math.round(v) })} unit="세" />
+        </Field>
+        <Field label="수령기 수익률">
+          <NumInput value={a.payoutReturn} onChange={(v) => update(key, { payoutReturn: v })} unit="%" step={0.1} />
+        </Field>
+        <Field label="수령 기간 정하는 방법">
+          <select
+            value={a.payoutBasis}
+            onChange={(e) => {
+              // 방식을 바꿔도 지금 계산 결과가 유지되도록 반대쪽 값을 맞춘다
+              const payoutBasis = e.target.value as PayoutForm['payoutBasis']
+              update(key, { payoutBasis, payoutYears: plan.years, payoutEndAge: endAge })
+            }}
+          >
+            <option value="years">수령 기간 입력</option>
+            <option value="endAge">소진 나이 입력 (그 나이에 잔액 0)</option>
+          </select>
+        </Field>
+        {a.payoutBasis === 'years' ? (
+          <Field label="수령 기간" hint={`${plan.start}세부터 받아 ${endAge}세에 잔액이 모두 소진됩니다.${adjustedNote}`}>
+            <NumInput
+              key="years"
+              value={a.payoutYears}
+              onChange={(v) => update(key, { payoutYears: Math.round(v) })}
+              unit="년"
+            />
+          </Field>
+        ) : (
+          <Field label="소진 나이" hint={`${plan.start}세부터 ${plan.years}년 동안 나눠 받습니다.${adjustedNote}`}>
+            <NumInput
+              key="endAge"
+              value={a.payoutEndAge}
+              onChange={(v) => update(key, { payoutEndAge: Math.round(v) })}
+              unit="세"
+            />
+          </Field>
+        )}
+      </>
+    )
+  }
 
   return (
     <div className="page">
@@ -476,15 +538,7 @@ export default function App() {
             <Field label="적립기 수익률">
               <NumInput value={dc.accumReturn} onChange={(v) => update('dc', { accumReturn: v })} unit="%" step={0.1} />
             </Field>
-            <Field label="수령 개시 나이" hint={minAgeHint(dc.startAge)}>
-              <NumInput value={dc.startAge} onChange={(v) => update('dc', { startAge: Math.round(v) })} unit="세" />
-            </Field>
-            <Field label="수령 기간" hint={yearsHint(dc.payoutYears)}>
-              <NumInput value={dc.payoutYears} onChange={(v) => update('dc', { payoutYears: Math.round(v) })} unit="년" />
-            </Field>
-            <Field label="수령기 수익률">
-              <NumInput value={dc.payoutReturn} onChange={(v) => update('dc', { payoutReturn: v })} unit="%" step={0.1} />
-            </Field>
+            {payoutFields('dc', dc.retireAge)}
           </Section>
 
           <Section
@@ -517,15 +571,7 @@ export default function App() {
             <Field label="적립기 수익률">
               <NumInput value={personal.accumReturn} onChange={(v) => update('personal', { accumReturn: v })} unit="%" step={0.1} />
             </Field>
-            <Field label="수령 개시 나이" hint={minAgeHint(personal.startAge)}>
-              <NumInput value={personal.startAge} onChange={(v) => update('personal', { startAge: Math.round(v) })} unit="세" />
-            </Field>
-            <Field label="수령 기간" hint={yearsHint(personal.payoutYears)}>
-              <NumInput value={personal.payoutYears} onChange={(v) => update('personal', { payoutYears: Math.round(v) })} unit="년" />
-            </Field>
-            <Field label="수령기 수익률">
-              <NumInput value={personal.payoutReturn} onChange={(v) => update('personal', { payoutReturn: v })} unit="%" step={0.1} />
-            </Field>
+            {payoutFields('personal', personal.endAge)}
           </Section>
         </div>
 
