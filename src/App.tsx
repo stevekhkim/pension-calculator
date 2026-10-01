@@ -2,7 +2,14 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { StackedChart } from './Chart'
 import { PARAMS, nationalPensionNormalAge } from './engine/params'
 import { estimateNationalPension } from './engine/national'
-import { calculate, type Amounts, type Inputs, type SourceKey } from './engine/simulate'
+import {
+  calculate,
+  type AccountKey,
+  type Amounts,
+  type Balance,
+  type Inputs,
+  type SourceKey,
+} from './engine/simulate'
 
 // 화면 입력 단위: 금액은 만원, 비율은 %
 interface Form {
@@ -248,6 +255,12 @@ export default function App() {
   const gross = (a: Amounts) => (basis === 'real' ? a.grossReal : a.grossNominal)
   const net = (a: Amounts) => (basis === 'real' ? a.netReal : a.netNominal)
   const activeSeries = SERIES.filter(({ key }) => form[key].enabled)
+  const accountSeries = activeSeries.filter(({ key }) => key !== 'national')
+  const bal = (b: Balance) => (basis === 'real' ? b.real : b.nominal)
+  const peak = result.balances.reduce<(typeof result.balances)[number] | null>(
+    (best, b) => (!best || bal(b.total) > bal(best.total) ? b : best),
+    null,
+  )
   const { headline } = result
 
   const minAgeHint = (startAge: number) =>
@@ -602,6 +615,7 @@ export default function App() {
                   }))}
                   series={activeSeries}
                   format={man}
+                  label="나이별 세후 월 수령액 누적 막대 차트"
                 />
                 <details>
                   <summary>표로 보기</summary>
@@ -639,6 +653,93 @@ export default function App() {
                   </div>
                 </details>
               </section>
+
+              {accountSeries.length > 0 && (
+                <section className="card">
+                  <header className="card-header">
+                    <h2>연금 자산 추이</h2>
+                  </header>
+                  {peak && (
+                    <div className="hero">
+                      <div>
+                        <div className="hero-label">최대 적립금 ({peak.age}세 말)</div>
+                        <div className="hero-sub strong-ink">{eok(bal(peak.total))}</div>
+                      </div>
+                      <div>
+                        <div className="hero-label">현재</div>
+                        <div className="hero-sub">{eok(result.balanceNow.total.nominal)}</div>
+                      </div>
+                    </div>
+                  )}
+                  <p className="note">
+                    퇴직연금·개인연금 계좌의 나이별 연말 잔액({basis === 'real' ? '현재가치' : '미래 금액'})입니다.
+                    국민연금은 적립금 계좌가 없어 제외했습니다.
+                  </p>
+                  {accountSeries.length > 1 && (
+                    <div className="legend">
+                      {accountSeries.map(({ key, label }) => (
+                        <span key={key} className="chip">
+                          <span className={`swatch series-${key}`} />
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <StackedChart
+                    data={result.balances.map((b) => ({
+                      age: b.age,
+                      year: b.year,
+                      values: { national: 0, dc: bal(b.values.dc), personal: bal(b.values.personal) },
+                    }))}
+                    series={accountSeries}
+                    format={eok}
+                    label="나이별 연금 적립금 누적 막대 차트"
+                    tooltipTitle={(d) => `${d.age}세 말 · ${d.year}년`}
+                  />
+                  <details>
+                    <summary>표로 보기</summary>
+                    <div className="table-scroll">
+                      <table className="table">
+                        <thead>
+                          <tr>
+                            <th>나이</th>
+                            {accountSeries.map(({ key, label }) => (
+                              <th key={key} className="num">
+                                {label}
+                              </th>
+                            ))}
+                            <th className="num">합계</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>현재</td>
+                            {accountSeries.map(({ key }) => (
+                              <td key={key} className="num">
+                                {man(result.balanceNow.values[key as AccountKey].nominal)}
+                              </td>
+                            ))}
+                            <td className="num strong">{man(result.balanceNow.total.nominal)}</td>
+                          </tr>
+                          {result.balances.map((b) => (
+                            <tr key={b.age}>
+                              <td>
+                                {b.age}세 말 <span className="muted">{b.year}</span>
+                              </td>
+                              {accountSeries.map(({ key }) => (
+                                <td key={key} className="num">
+                                  {man(bal(b.values[key as AccountKey]))}
+                                </td>
+                              ))}
+                              <td className="num strong">{man(bal(b.total))}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                </section>
+              )}
 
               <section className="card">
                 <header className="card-header">

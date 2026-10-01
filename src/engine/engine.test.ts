@@ -166,6 +166,37 @@ describe('통합 계산', () => {
     expect(r.rows[10].total.netReal).toBeCloseTo(monthly * (1 - rate * 0.6))
   })
 
+  it('적립금 추이: 적립 → 수령 → 소진', () => {
+    // 40세, 개인연금 월 100만원 적립(50~59세분), 60세부터 10년 수령, 수익률·물가 0
+    const r = calculate(
+      inputs({
+        personal: {
+          ...account({ monthlyContribution: 1_000_000, contributionEndAge: 60, startAge: 60 }),
+          taxType: 'deductible',
+        },
+      }),
+      NOW,
+    )
+    expect(r.balanceNow.total.nominal).toBe(0)
+    expect(r.balances[0].age).toBe(40)
+    expect(r.balances[0].values.personal.nominal).toBeCloseTo(12_000_000)
+    const at = (age: number) => r.balances.find((b) => b.age === age)!.total.nominal
+    expect(at(59)).toBeCloseTo(240_000_000)
+    expect(at(60)).toBeCloseTo(216_000_000)
+    expect(at(69)).toBeCloseTo(0)
+    expect(r.balances[r.balances.length - 1].age).toBe(69)
+  })
+
+  it('적립금 현재가치는 물가로 할인', () => {
+    const r = calculate(
+      inputs({ inflation: 0.02, dc: { ...account({ balance: 100_000_000 }), joinYear: 2016 } }),
+      NOW,
+    )
+    const b = r.balances[0].values.dc
+    expect(b.nominal).toBeCloseTo(100_000_000)
+    expect(b.real).toBeCloseTo(100_000_000 / 1.02)
+  })
+
   it('구간 요약과 대표값', () => {
     const r = calculate(
       inputs({

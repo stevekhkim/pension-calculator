@@ -11,6 +11,8 @@ interface Props {
   data: ChartDatum[]
   series: { key: SourceKey; label: string }[]
   format: (v: number) => string
+  label: string
+  tooltipTitle?: (d: ChartDatum) => string
 }
 
 const HEIGHT = 280
@@ -32,7 +34,7 @@ function topRounded(x: number, y: number, w: number, h: number): string {
   return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`
 }
 
-export function StackedChart({ data, series, format }: Props) {
+export function StackedChart({ data, series, format, label, tooltipTitle }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(640)
   const [hover, setHover] = useState<number | null>(null)
@@ -60,7 +62,7 @@ export function StackedChart({ data, series, format }: Props) {
 
   return (
     <div className="chart" ref={wrapRef} onPointerLeave={() => setHover(null)}>
-      <svg viewBox={`0 0 ${width} ${HEIGHT}`} role="img" aria-label="나이별 세후 월 수령액 누적 막대 차트">
+      <svg viewBox={`0 0 ${width} ${HEIGHT}`} role="img" aria-label={label}>
         {ticks.map((t) => (
           <g key={t}>
             <line
@@ -123,7 +125,7 @@ export function StackedChart({ data, series, format }: Props) {
           style={{ left: Math.min(Math.max(MARGIN.left + band * (hover + 0.5), 96), width - 96) }}
         >
           <div className="chart-tooltip-title">
-            {hovered.age}세 · {hovered.year}년
+            {tooltipTitle ? tooltipTitle(hovered) : `${hovered.age}세 · ${hovered.year}년`}
           </div>
           {series
             .filter(({ key }) => hovered.values[key] > 0)

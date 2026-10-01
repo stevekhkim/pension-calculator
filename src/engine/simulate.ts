@@ -60,8 +60,25 @@ export interface AccountInfo {
   startBalanceReal: number
 }
 
+export type AccountKey = 'dc' | 'personal'
+
+export interface Balance {
+  nominal: number
+  real: number
+}
+
+/** 나이별 연말(다음 생일 직전) 적립금 */
+export interface BalanceRow {
+  age: number
+  year: number
+  values: Record<AccountKey, Balance>
+  total: Balance
+}
+
 export interface Result {
   rows: Row[]
+  balanceNow: BalanceRow
+  balances: BalanceRow[]
   phases: Phase[]
   headline: Row | null
   personal: AccountInfo | null
@@ -76,8 +93,10 @@ const zero = (): Amounts => ({ grossNominal: 0, netNominal: 0, grossReal: 0, net
 
 interface AccountSim {
   payouts: Float64Array
+  balances: Float64Array // 각 달 말 잔액
   retireM: number
   startM: number
+  endM: number // 마지막 수령 다음 달
   retireBalance: number
   startBalance: number
 }
@@ -95,6 +114,7 @@ export function simulateAccount(
   const rAccum = monthlyRate(a.accumReturn)
   const rPayout = monthlyRate(a.payoutReturn)
 
+  const balances = new Float64Array(months)
   let balance = a.balance
   let retireBalance = balance
   for (let m = 0; m < startM; m++) {
@@ -102,6 +122,7 @@ export function simulateAccount(
       m < retireM ? a.monthlyContribution * Math.pow(1 + a.contributionGrowth, Math.floor(m / 12)) : 0
     balance = balance * (1 + rAccum) + contribution
     if (m + 1 === retireM) retireBalance = balance
+    if (m < months) balances[m] = balance
   }
   const startBalance = balance
 
@@ -113,9 +134,14 @@ export function simulateAccount(
   const first = startBalance / pvFactor
 
   const payouts = new Float64Array(months)
-  for (let k = 0; k < n && startM + k < months; k++) payouts[startM + k] = first * step(k)
+  for (let k = 0; k < n && startM + k < months; k++) {
+    payouts[startM + k] = first * step(k)
+    // 월초 지급 후 남은 금액을 운용
+    balance = Math.max(0, (balance - payouts[startM + k]) * (1 + rPayout))
+    balances[startM + k] = balance
+  }
 
-  return { payouts, retireM, startM, retireBalance, startBalance }
+  return { payouts, balances, retireM, startM, endM: startM + n, retireBalance, startBalance }
 }
 
 export function calculate(inputs: Inputs, now: { year: number; month: number }): Result {
@@ -234,7 +260,35 @@ export function calculate(inputs: Inputs, now: { year: number; month: number }):
     ? (rows.find((r) => r.age >= Math.max(...startAges)) ?? rows[rows.length - 1] ?? null)
     : null
 
-  return { rows, phases: buildPhases(rows), headline, personal, dc, national }
+  // 적립금 추이: 지금부터 모든 계좌가 소진될 때까지
+  const sims: Record<AccountKey, AccountSim | null> = { dc: dcSim, personal: personalSim }
+  const balanceRow = (age: number, at: (sim: AccountSim) => number, d: number): BalanceRow => {
+    const row: BalanceRow = {
+      age,
+      year: inputs.birthYear + age,
+      values: { dc: { nominal: 0, real: 0 }, personal: { nominal: 0, real: 0 } },
+      total: { nominal: 0, real: 0 },
+    }
+    for (const key of ['dc', 'personal'] as AccountKey[]) {
+      const sim = sims[key]
+      if (!sim) continue
+      const nominal = at(sim)
+      row.values[key] = { nominal, real: nominal / d }
+      row.total.nominal += nominal
+      row.total.real += nominal / d
+    }
+    return row
+  }
+  const balanceNow = balanceRow(ageAt(0), (sim) => (sim === dcSim ? inputs.dc.balance : inputs.personal.balance), 1)
+  const balances: BalanceRow[] = []
+  const lastM = Math.min(months, Math.max(0, ...[dcSim, personalSim].map((sim) => sim?.endM ?? 0))) - 1
+  for (let age = ageAt(0); lastM >= 0; age++) {
+    const mEnd = Math.min((age + 1) * 12 - ageMonths0 - 1, lastM)
+    balances.push(balanceRow(age, (sim) => sim.balances[mEnd], deflator(mEnd + 1)))
+    if (mEnd === lastM) break
+  }
+
+  return { rows, balanceNow, balances, phases: buildPhases(rows), headline, personal, dc, national }
 }
 
 function buildPhases(rows: Row[]): Phase[] {

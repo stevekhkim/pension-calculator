@@ -288,6 +288,10 @@ select {
   line-height: 1.5;
 }
 
+.hero-sub.strong-ink {
+  color: var(--text-primary);
+}
+
 .note {
   margin: 8px 0 0;
   font-size: 13px;
