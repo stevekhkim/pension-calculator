@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { SourceKey } from './engine/simulate'
 
 export interface ChartDatum {
@@ -37,9 +37,11 @@ export function StackedChart({ data, series, format }: Props) {
   const [width, setWidth] = useState(640)
   const [hover, setHover] = useState<number | null>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = wrapRef.current
     if (!el) return
+    // 첫 그리기 전에 실제 폭을 재고, 이후 크기 변화는 ResizeObserver로 따라간다
+    setWidth(el.clientWidth)
     const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width))
     observer.observe(el)
     return () => observer.disconnect()
@@ -58,7 +60,7 @@ export function StackedChart({ data, series, format }: Props) {
 
   return (
     <div className="chart" ref={wrapRef} onPointerLeave={() => setHover(null)}>
-      <svg width={width} height={HEIGHT} role="img" aria-label="나이별 세후 월 수령액 누적 막대 차트">
+      <svg viewBox={`0 0 ${width} ${HEIGHT}`} role="img" aria-label="나이별 세후 월 수령액 누적 막대 차트">
         {ticks.map((t) => (
           <g key={t}>
             <line

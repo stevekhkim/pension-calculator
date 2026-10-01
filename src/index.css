@@ -68,6 +68,7 @@ body {
 
 .layout {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -360,6 +361,8 @@ select {
 
 .chart svg {
   display: block;
+  width: 100%;
+  height: auto;
 }
 
 .chart-grid {
