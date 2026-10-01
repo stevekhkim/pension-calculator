@@ -5,6 +5,7 @@ import { estimateNationalPension } from './engine/national'
 import {
   calculate,
   type AccountKey,
+  type AccountInfo,
   type Amounts,
   type Balance,
   type Inputs,
@@ -14,9 +15,10 @@ import {
 // 화면 입력 단위: 금액은 만원, 비율은 %
 interface PayoutForm {
   startAge: number
-  payoutBasis: 'years' | 'endAge'
+  payoutBasis: 'years' | 'endAge' | 'amount'
   payoutYears: number
   payoutEndAge: number
+  payoutAmount: number // 만원, 현재가치
   payoutReturn: number
 }
 
@@ -66,6 +68,7 @@ const DEFAULT_FORM: Form = {
     payoutBasis: 'years',
     payoutYears: 25,
     payoutEndAge: 85,
+    payoutAmount: 100,
     payoutReturn: 3,
     taxType: 'deductible',
   },
@@ -92,6 +95,7 @@ const DEFAULT_FORM: Form = {
     payoutBasis: 'years',
     payoutYears: 25,
     payoutEndAge: 85,
+    payoutAmount: 100,
     payoutReturn: 3,
   },
 }
@@ -138,6 +142,7 @@ function toInputs(f: Form, nationalMonthly: number, currentAge: number): Inputs 
       accumReturn: f.personal.accumReturn / 100,
       startAge: f.personal.startAge,
       payoutYears: payoutPlan(f.personal, f.personal.endAge, currentAge).years,
+      payoutAmount: f.personal.payoutBasis === 'amount' ? f.personal.payoutAmount * WON : undefined,
       payoutReturn: f.personal.payoutReturn / 100,
       taxType: f.personal.taxType,
     },
@@ -155,6 +160,7 @@ function toInputs(f: Form, nationalMonthly: number, currentAge: number): Inputs 
       accumReturn: f.dc.accumReturn / 100,
       startAge: f.dc.startAge,
       payoutYears: payoutPlan(f.dc, f.dc.retireAge, currentAge).years,
+      payoutAmount: f.dc.payoutBasis === 'amount' ? f.dc.payoutAmount * WON : undefined,
       payoutReturn: f.dc.payoutReturn / 100,
       joinYear: f.dc.joinYear,
     },
@@ -281,10 +287,33 @@ export default function App() {
 
   const minAgeHint = (startAge: number) =>
     startAge < PARAMS.privatePensionMinAge ? '55세부터 받을 수 있어 55세로 계산합니다.' : undefined
+  const amountHint = (info: AccountInfo) => {
+    const m = info.payoutMonths
+    const duration = `${Math.floor(m / 12)}년${m % 12 ? ` ${m % 12}개월` : ''}`
+    const growth =
+      common.payoutMode === 'real'
+        ? '수령액은 매년 물가만큼 늘려 받는 것으로 계산합니다.'
+        : '개시 시점 금액으로 매달 같은 금액을 받는 것으로 계산합니다.'
+    if (!info.depleted) {
+      return `${MAX_END_AGE}세까지 소진되지 않습니다. 수령기 수익이 인출액보다 큽니다. ${growth}`
+    }
+    const limitNote =
+      m < PARAMS.minPayoutYears * 12
+        ? ' 10년 안에 소진되면 연금수령한도를 넘어 실제 세금이 더 많을 수 있습니다.'
+        : ''
+    return `${info.startAge}세부터 ${duration} 동안 받고 ${info.endAge}세에 소진됩니다. ${growth}${limitNote}`
+  }
+
   const payoutFields = (key: 'dc' | 'personal', contributionEndAge: number) => {
     const a = form[key]
     const plan = payoutPlan(a, contributionEndAge, currentAge)
-    const endAge = plan.start + plan.years
+    const info = result[key]
+    // 월 수령액 방식일 때는 엔진이 구한 실제 수령 기간을 기준으로 다른 방식의 값을 맞춘다
+    const years =
+      a.payoutBasis === 'amount' && info
+        ? clamp(Math.round(info.payoutMonths / 12), PARAMS.minPayoutYears, MAX_END_AGE - plan.start)
+        : plan.years
+    const endAge = plan.start + years
     const adjustedNote = plan.adjusted
       ? ` 수령 기간은 ${PARAMS.minPayoutYears}년 이상, ${MAX_END_AGE}세 이하로 맞춰 계산합니다.`
       : ''
@@ -302,14 +331,31 @@ export default function App() {
             onChange={(e) => {
               // 방식을 바꿔도 지금 계산 결과가 유지되도록 반대쪽 값을 맞춘다
               const payoutBasis = e.target.value as PayoutForm['payoutBasis']
-              update(key, { payoutBasis, payoutYears: plan.years, payoutEndAge: endAge })
+              update(key, {
+                payoutBasis,
+                payoutYears: years,
+                payoutEndAge: endAge,
+                // 100원 단위로 맞춰 방식을 바꿔도 소진 시점이 그대로 유지되게 한다
+                payoutAmount: info ? Math.round(info.firstPayoutReal / 100) / 100 : a.payoutAmount,
+              })
             }}
           >
             <option value="years">수령 기간 입력</option>
             <option value="endAge">소진 나이 입력 (그 나이에 잔액 0)</option>
+            <option value="amount">월 수령액 입력 (소진 시점 계산)</option>
           </select>
         </Field>
-        {a.payoutBasis === 'years' ? (
+        {a.payoutBasis === 'amount' ? (
+          <Field label="월 수령액 (현재가치)" hint={info && amountHint(info)}>
+            <NumInput
+              key="amount"
+              value={a.payoutAmount}
+              onChange={(v) => update(key, { payoutAmount: v })}
+              unit="만원"
+              step={0.1}
+            />
+          </Field>
+        ) : a.payoutBasis === 'years' ? (
           <Field label="수령 기간" hint={`${plan.start}세부터 받아 ${endAge}세에 잔액이 모두 소진됩니다.${adjustedNote}`}>
             <NumInput
               key="years"

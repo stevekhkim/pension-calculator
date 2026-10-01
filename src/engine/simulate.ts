@@ -21,6 +21,8 @@ export interface AccountInput {
   startAge: number
   payoutYears: number
   payoutReturn: number
+  /** 있으면 수령 기간 대신 이 월 수령액(현재가치)으로 받고, 잔액이 바닥나는 시점을 구한다 */
+  payoutAmount?: number
 }
 
 export interface Inputs {
@@ -58,6 +60,10 @@ export interface AccountInfo {
   startAge: number
   startBalanceNominal: number
   startBalanceReal: number
+  firstPayoutReal: number // 첫 달 수령액 (현재가치)
+  payoutMonths: number // 실제 수령 개월 수
+  depleted: boolean // 계산 범위(100세) 안에 잔액이 0이 되는지
+  endAge: number // 잔액이 0이 되는 나이 (소진되지 않으면 계산 종료 나이)
 }
 
 export type AccountKey = 'dc' | 'personal'
@@ -99,6 +105,8 @@ interface AccountSim {
   endM: number // 마지막 수령 다음 달
   retireBalance: number
   startBalance: number
+  firstPayout: number
+  depleted: boolean
 }
 
 export function simulateAccount(
@@ -126,22 +134,48 @@ export function simulateAccount(
   }
   const startBalance = balance
 
-  // 잔액이 수령 기간 말에 0이 되는 첫 수령액
-  const n = Math.max(1, Math.round(a.payoutYears * 12))
   const step = (k: number) => (mode === 'real' ? Math.pow(1 + inflation, Math.floor(k / 12)) : 1)
-  let pvFactor = 0
-  for (let k = 0; k < n; k++) pvFactor += step(k) / Math.pow(1 + rPayout, k)
-  const first = startBalance / pvFactor
-
   const payouts = new Float64Array(months)
-  for (let k = 0; k < n && startM + k < months; k++) {
-    payouts[startM + k] = first * step(k)
-    // 월초 지급 후 남은 금액을 운용
-    balance = Math.max(0, (balance - payouts[startM + k]) * (1 + rPayout))
-    balances[startM + k] = balance
+  // 월초에 지급하고 남은 금액을 운용한다. 잔액보다 많이 줄 수는 없다
+  const pay = (m: number, amount: number) => {
+    payouts[m] = Math.min(balance, amount)
+    balance = Math.max(0, (balance - payouts[m]) * (1 + rPayout))
+    balances[m] = balance
   }
 
-  return { payouts, balances, retireM, startM, endM: startM + n, retireBalance, startBalance }
+  let first: number
+  let endM: number
+  if (a.payoutAmount !== undefined) {
+    // 월 수령액 지정: 오늘 돈 가치를 개시 시점 금액으로 바꿔 지급하다가 잔액이 바닥나는 달을 찾는다
+    first = a.payoutAmount * Math.pow(1 + inflation, startM / 12)
+    let m = startM
+    for (; m < months && balance > 0.5; m++) {
+      const amount = first * step(m - startM)
+      // 지급 후 남는 돈이 한 달 수령액의 10% 미만이면 그 달에 함께 지급한다
+      pay(m, balance - amount < amount * 0.1 ? balance : amount)
+    }
+    endM = m
+  } else {
+    // 수령 기간 지정: 잔액이 수령 기간 말에 0이 되는 첫 수령액
+    const n = Math.max(1, Math.round(a.payoutYears * 12))
+    let pvFactor = 0
+    for (let k = 0; k < n; k++) pvFactor += step(k) / Math.pow(1 + rPayout, k)
+    first = startBalance / pvFactor
+    for (let k = 0; k < n && startM + k < months; k++) pay(startM + k, first * step(k))
+    endM = Math.min(months, startM + n)
+  }
+
+  return {
+    payouts,
+    balances,
+    retireM,
+    startM,
+    endM,
+    retireBalance,
+    startBalance,
+    firstPayout: first,
+    depleted: balance <= 0.5,
+  }
 }
 
 export function calculate(inputs: Inputs, now: { year: number; month: number }): Result {
@@ -246,6 +280,10 @@ export function calculate(inputs: Inputs, now: { year: number; month: number }):
     startAge: ageAt(sim.startM),
     startBalanceNominal: sim.startBalance,
     startBalanceReal: sim.startBalance / deflator(sim.startM),
+    firstPayoutReal: sim.firstPayout / deflator(sim.startM),
+    payoutMonths: sim.endM - sim.startM,
+    depleted: sim.depleted,
+    endAge: ageAt(sim.endM),
   })
   const personal = personalSim ? accountInfo(personalSim) : null
   const dc = dcSim ? { ...accountInfo(dcSim), serviceYears, retirementTaxRate } : null

@@ -106,6 +106,68 @@ describe('계좌 시뮬레이션', () => {
   })
 })
 
+describe('월 수령액 지정 → 소진 시점', () => {
+  it('수익률·물가 0이면 잔액 ÷ 월 수령액 개월', () => {
+    const a = account({ balance: 120_000_000, payoutAmount: 1_000_000 })
+    const sim = simulateAccount(a, 60 * 12, 41 * 12, 0, 'real')
+    expect(sim.endM - sim.startM).toBe(120)
+    expect(sim.depleted).toBe(true)
+    expect(sim.payouts[119]).toBeCloseTo(1_000_000)
+    expect(sim.payouts[120]).toBe(0)
+  })
+
+  it('마지막 달은 남은 잔액만 지급', () => {
+    const a = account({ balance: 125_000_000, payoutAmount: 1_000_000 })
+    const sim = simulateAccount(a, 60 * 12, 41 * 12, 0, 'real')
+    expect(sim.endM - sim.startM).toBe(125)
+    const b = account({ balance: 125_500_000, payoutAmount: 1_000_000 })
+    const simB = simulateAccount(b, 60 * 12, 41 * 12, 0, 'real')
+    expect(simB.payouts[125]).toBeCloseTo(500_000)
+    // 한 달 수령액의 10% 미만으로 남으면 마지막 달에 함께 지급
+    const c = account({ balance: 125_050_000, payoutAmount: 1_000_000 })
+    const simC = simulateAccount(c, 60 * 12, 41 * 12, 0, 'real')
+    expect(simC.endM - simC.startM).toBe(125)
+    expect(simC.payouts[124]).toBeCloseTo(1_050_000)
+  })
+
+  it('수령 기간 방식의 첫 수령액을 넣으면 같은 기간에 소진', () => {
+    for (const mode of ['real', 'level'] as const) {
+      const base = account({ balance: 300_000_000, payoutYears: 20, payoutReturn: 0.04 })
+      const byYears = simulateAccount(base, 60 * 12, 41 * 12, 0.02, mode)
+      const byAmount = simulateAccount(
+        { ...base, payoutAmount: byYears.payouts[0] * 1.000001 },
+        60 * 12,
+        41 * 12,
+        0.02,
+        mode,
+      )
+      expect(byAmount.endM - byAmount.startM).toBe(240)
+    }
+  })
+
+  it('월 수령액은 현재가치: 개시 시점까지 물가만큼 키운다', () => {
+    // 40세, 60세 개시, 물가 2%
+    const a = account({ balance: 1_000_000_000, payoutAmount: 1_000_000 })
+    const sim = simulateAccount(a, 40 * 12, 61 * 12, 0.02, 'real')
+    expect(sim.payouts[sim.startM]).toBeCloseTo(1_000_000 * Math.pow(1.02, 20))
+  })
+
+  it('수익이 인출보다 크면 100세까지 소진되지 않음', () => {
+    const r = calculate(
+      inputs({
+        personal: {
+          ...account({ balance: 500_000_000, payoutReturn: 0.05, payoutAmount: 500_000 }),
+          taxType: 'deductible',
+        },
+      }),
+      NOW,
+    )
+    expect(r.personal!.depleted).toBe(false)
+    expect(r.personal!.endAge).toBe(101)
+    expect(r.personal!.firstPayoutReal).toBeCloseTo(500_000)
+  })
+})
+
 describe('통합 계산', () => {
   it('개인연금: 세액공제형 5.5%', () => {
     const r = calculate(
