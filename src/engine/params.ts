@@ -26,6 +26,13 @@ export const PARAMS = {
   privatePensionMinAge: 55,
   minPayoutYears: 10,
 
+  // 국민연금 직접 계산
+  nationalA: 3_193_511, // 2026년 적용 A값(전체 가입자 평균소득월액)
+  incomeCap: 6_590_000, // 기준소득월액 상한 (2026.7~2027.6)
+  incomeFloor: 410_000, // 기준소득월액 하한 (2026.7~2027.6)
+  contributionRate: 0.095, // 2026년 보험료율 (직장가입자는 절반 부담)
+  minInsuredMonths: 120,
+
   // 공적연금
   pensionDeductionCap: 9_000_000,
   basicDeduction: 1_500_000,

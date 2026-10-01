@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { StackedChart } from './Chart'
 import { PARAMS, nationalPensionNormalAge } from './engine/params'
+import { estimateNationalPension } from './engine/national'
 import { calculate, type Amounts, type Inputs, type SourceKey } from './engine/simulate'
 
 // 화면 입력 단위: 금액은 만원, 비율은 %
@@ -18,7 +19,17 @@ interface Form {
     payoutReturn: number
     taxType: 'deductible' | 'exempt'
   }
-  national: { enabled: boolean; monthly: number; startAge: number }
+  national: {
+    enabled: boolean
+    mode: 'simple' | 'direct'
+    monthly: number
+    startAge: number
+    pastYears: number
+    pastIncome: number
+    futureType: 'income' | 'employee' | 'regional'
+    futureValue: number
+    endAge: number
+  }
   dc: {
     enabled: boolean
     balance: number
@@ -47,7 +58,17 @@ const DEFAULT_FORM: Form = {
     payoutReturn: 3,
     taxType: 'deductible',
   },
-  national: { enabled: true, monthly: 120, startAge: 65 },
+  national: {
+    enabled: true,
+    mode: 'simple',
+    monthly: 120,
+    startAge: 65,
+    pastYears: 15,
+    pastIncome: 350,
+    futureType: 'income',
+    futureValue: 450,
+    endAge: 60,
+  },
   dc: {
     enabled: true,
     balance: 5000,
@@ -74,9 +95,13 @@ const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(mi
 const man = (won: number) => `${Math.round(won / WON).toLocaleString('ko-KR')}만원`
 const eok = (won: number) =>
   won >= 1e8 ? `${(won / 1e8).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}억원` : man(won)
+// 입력값 ÷ 이 값 = 월 소득
+const premiumRate = (type: Form['national']['futureType']) =>
+  type === 'income' ? 1 : type === 'employee' ? PARAMS.contributionRate / 2 : PARAMS.contributionRate
+const years1 = (months: number) => (months / 12).toLocaleString('ko-KR', { maximumFractionDigits: 1 })
 const pct = (v: number) => `${(v * 100).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}%`
 
-function toInputs(f: Form): Inputs {
+function toInputs(f: Form, nationalMonthly: number): Inputs {
   const normalAge = nationalPensionNormalAge(f.common.birthYear)
   const years = (v: number) => clamp(v, PARAMS.minPayoutYears, MAX_PAYOUT_YEARS)
   return {
@@ -98,7 +123,7 @@ function toInputs(f: Form): Inputs {
     },
     national: {
       enabled: f.national.enabled,
-      monthlyAmount: f.national.monthly * WON,
+      monthlyAmount: nationalMonthly,
       startAge: clamp(f.national.startAge, normalAge - 5, normalAge + 5),
     },
     dc: {
@@ -194,12 +219,29 @@ export default function App() {
     const d = new Date()
     return { year: d.getFullYear(), month: d.getMonth() + 1 }
   })
-  const result = useMemo(() => calculate(toInputs(form), now), [form, now])
+  const { common, personal, national, dc } = form
+  const futureIncome = (national.futureValue * WON) / premiumRate(national.futureType)
+  const estimate = useMemo(
+    () =>
+      estimateNationalPension(
+        {
+          birthYear: common.birthYear,
+          birthMonth: common.birthMonth,
+          pastMonths: national.pastYears * 12,
+          pastIncome: national.pastIncome * WON,
+          futureIncome,
+          contributionEndAge: national.endAge,
+        },
+        now,
+      ),
+    [common.birthYear, common.birthMonth, national.pastYears, national.pastIncome, futureIncome, national.endAge, now],
+  )
+  const nationalMonthly = national.mode === 'simple' ? national.monthly * WON : estimate.monthly
+  const result = useMemo(() => calculate(toInputs(form, nationalMonthly), now), [form, nationalMonthly, now])
 
   const update = <K extends keyof Form>(key: K, patch: Partial<Form[K]>) =>
     setForm((f) => ({ ...f, [key]: { ...f[key], ...patch } }))
 
-  const { common, personal, national, dc } = form
   const currentAge = Math.floor(((now.year - common.birthYear) * 12 + now.month - common.birthMonth) / 12)
   const normalAge = nationalPensionNormalAge(common.birthYear)
   const nationalStartAge = clamp(national.startAge, normalAge - 5, normalAge + 5)
@@ -271,16 +313,108 @@ export default function App() {
             enabled={national.enabled}
             onToggle={(v) => update('national', { enabled: v })}
           >
-            <Field
-              label="예상 월 연금액 (현재가치)"
-              hint={
-                <>
-                  국민연금공단 "내 연금 알아보기"에서 조회한 {normalAge}세 기준 금액을 입력하세요.
-                </>
-              }
-            >
-              <NumInput value={national.monthly} onChange={(v) => update('national', { monthly: v })} unit="만원" />
-            </Field>
+            <div className="field">
+              <span className="field-label">입력 방식</span>
+              <div className="segmented full" role="group" aria-label="국민연금 입력 방식">
+                <button aria-pressed={national.mode === 'simple'} onClick={() => update('national', { mode: 'simple' })}>
+                  공단 조회액 입력
+                </button>
+                <button aria-pressed={national.mode === 'direct'} onClick={() => update('national', { mode: 'direct' })}>
+                  직접 계산
+                </button>
+              </div>
+            </div>
+            {national.mode === 'simple' ? (
+              <Field
+                label="예상 월 연금액 (현재가치)"
+                hint={<>국민연금공단 "내 연금 알아보기"에서 조회한 {normalAge}세 기준 금액을 입력하세요.</>}
+              >
+                <NumInput value={national.monthly} onChange={(v) => update('national', { monthly: v })} unit="만원" />
+              </Field>
+            ) : (
+              <>
+                <Field
+                  label="지금까지 가입기간"
+                  hint="공단 가입내역에서 확인할 수 있습니다. 최근까지 이어서 가입한 것으로 계산합니다."
+                >
+                  <NumInput
+                    value={national.pastYears}
+                    onChange={(v) => update('national', { pastYears: v })}
+                    unit="년"
+                    step={0.5}
+                  />
+                </Field>
+                <Field label="지금까지 평균 월소득" hint="현재 물가 기준입니다. 모르면 현재 월소득을 넣으세요.">
+                  <NumInput
+                    value={national.pastIncome}
+                    onChange={(v) => update('national', { pastIncome: v })}
+                    unit="만원"
+                    step={10}
+                  />
+                </Field>
+                <Field label="앞으로 납부 기준">
+                  <select
+                    value={national.futureType}
+                    onChange={(e) => {
+                      // 기준을 바꿔도 같은 소득이 되도록 입력값을 환산한다
+                      const futureType = e.target.value as Form['national']['futureType']
+                      const rate = premiumRate(futureType)
+                      const value = (futureIncome * rate) / WON
+                      // 보험료는 0.1만원, 소득은 1만원 단위로 반올림
+                      const futureValue = rate < 1 ? Math.round(value * 10) / 10 : Math.round(value)
+                      update('national', { futureType, futureValue })
+                    }}
+                  >
+                    <option value="income">월 소득</option>
+                    <option value="employee">월 보험료 (직장가입자 본인 부담분)</option>
+                    <option value="regional">월 보험료 (지역가입자)</option>
+                  </select>
+                </Field>
+                <Field
+                  label={national.futureType === 'income' ? '앞으로 월평균 소득' : '앞으로 월평균 보험료'}
+                  hint={
+                    national.futureType === 'income'
+                      ? `현재 물가 기준입니다. 상한 ${man(PARAMS.incomeCap)}, 하한 ${man(PARAMS.incomeFloor)}이 적용됩니다.`
+                      : `소득 약 ${man(futureIncome)}으로 환산합니다. (${PARAMS.baseYear}년 보험료율 ${pct(PARAMS.contributionRate)} 기준)`
+                  }
+                >
+                  <NumInput
+                    key={national.futureType}
+                    value={national.futureValue}
+                    onChange={(v) => update('national', { futureValue: v })}
+                    unit="만원"
+                    step={national.futureType === 'income' ? 10 : 1}
+                  />
+                </Field>
+                <Field
+                  label="납부 종료 나이"
+                  hint={`앞으로 ${years1(estimate.futureMonths)}년 더 납부합니다. 의무가입은 만 60세 전까지입니다.`}
+                >
+                  <NumInput
+                    value={national.endAge}
+                    onChange={(v) => update('national', { endAge: Math.round(v) })}
+                    unit="세"
+                  />
+                </Field>
+                <div className="estimate">
+                  <div className="field-label">{normalAge}세 기준 예상 월 연금액 (현재가치)</div>
+                  {estimate.eligible ? (
+                    <>
+                      <div className="estimate-value">{man(estimate.monthly)}</div>
+                      <div className="field-hint">
+                        총 가입 {years1(estimate.totalMonths)}년 · 평균소득(B값) {man(estimate.averageIncome)} · A값{' '}
+                        {man(PARAMS.nationalA)}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="estimate-warning">
+                      총 가입기간이 {years1(estimate.totalMonths)}년으로 10년 미만이라 연금 대신 반환일시금을
+                      받습니다.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
             <Field label="수령 개시 나이" hint={`${common.birthYear}년생의 정상 개시 나이는 ${normalAge}세입니다.`}>
               <select
                 value={nationalStartAge}
@@ -515,8 +649,9 @@ export default function App() {
                     <>
                       <dt>국민연금</dt>
                       <dd>
-                        {result.national.startAge}세 개시, 입력 금액의 {pct(result.national.adjustment)} 지급 (매년
-                        물가 연동)
+                        {national.mode === 'direct' &&
+                          `직접 계산 월 ${man(estimate.monthly)} (가입 ${years1(estimate.totalMonths)}년), `}
+                        {result.national.startAge}세 개시, {pct(result.national.adjustment)} 지급 (매년 물가 연동)
                       </dd>
                     </>
                   )}
@@ -562,6 +697,11 @@ export default function App() {
               <li>
                 세액공제형 개인연금과 퇴직연금 운용수익의 합계가 연 1,500만원(현재가치)을 넘으면 16.5%
                 분리과세와 종합과세 중 세금이 적은 쪽으로 계산합니다.
+              </li>
+              <li>
+                국민연금 직접 계산은 {PARAMS.baseYear}년 A값과 현재 물가 기준 소득으로 공단 산식을 적용한
+                추정치입니다. 출산·군복무 크레딧, 부양가족연금, 가입 공백은 반영하지 않으니 공단 조회액이 있으면
+                그 값을 쓰는 것이 더 정확합니다.
               </li>
               <li>
                 세액공제형 개인연금은 납입액 전부를 세액공제 받았다고 가정합니다. 종신형 연금, 운용 수수료,
